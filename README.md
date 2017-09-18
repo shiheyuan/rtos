@@ -13,11 +13,11 @@
 - 人员：王楠、施鹤远
 - 问题：西门子OS兼容性与性能优化
   	- 兼容性：
-      - 支持Posix接口 *
-      - 支持文件系统 *
+      - 支持Posix接口
+      - 支持文件系统
       - 支持类linux网络功能（转发、路由、iptable等）
       - 开源网络协议/框架移植性（dhcp、igmp、isis等） 
-      - 第三方应用工具兼容性(net-snmp web-server等) *
+      - 第三方应用工具兼容性(net-snmp web-server等)
     - 性能：
       - DMA访问时间
       - 中断响应时间
