@@ -1,7 +1,7 @@
 ## 嵌入式操作系统
 ### 当前成员
-- [施鹤远](https://shiheyuan.github.io/home/)
 - 王楠
+- [施鹤远](https://shiheyuan.github.io/home/)
 
 ### 历史成员
 - 佘磊
@@ -19,5 +19,5 @@
 - [基于Linux Hook函数实现的自主单向NAT代码](https://github.com/shiheyuan/rtos/blob/master/nat_part.c)
 
 #### 资料
-
-
+- [Linux内核协议栈分析](http://blog.csdn.net/qy532846454/article/category/1385933/2)
+- [Linux内核参数说明](http://blog.csdn.net/zdy0_2004/article/details/50379422)
