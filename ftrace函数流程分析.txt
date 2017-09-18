@@ -1,0 +1,135 @@
+# tracer: function_graph
+#
+# CPU  DURATION                  FUNCTION CALLS
+# |     |   |                     |   |   |   |
+
+el_interrupt() // 网卡驱动
+|--> el_receive() // 网卡驱动
+            |--> netif_rx() // 内核接口
+                       |--> enqueue_to_backlog() // 内核接口
+
+net_rx_action // 软中断
+    |--> process_backlog() // 默认poll
+ (0)               |      netif_receive_skb() {		L2处理函数
+
+ (0)               |        ip_rcv() { 		L3入口
+											ip_rcv()是IP层的入口，主要做了：
+												丢弃L2目的地址不是本机的数据包（这说明网卡处于混杂模式，嗅探器会处理这些包）。
+												检查skb的引用计数，如果大于1，说明其它地方也在使用此skb，则克隆一个skb返回；否则直接返回原来的skb。
+											数据包合法性检查：
+												data room必须大于IP报头长度。
+												IP报头长度至少是20，类型为IPv4。
+												data room至少能容纳IP报头(包括IP选项)。
+											检查IP报头校验和是否正确。
+											数据包没被截断(skb->len >= 报总长)，报总长不小于20。
+											如果L2有进行填充（以太网帧最小长度为64），则把IP包裁剪成原大小，去除填充。此时如果接收的NIC
+												已计算出校验和，则让其失效，让L4自己重新计算。
+											最后，调用netfilter的NF_INET_PRE_ROUTING的钩子函数，如果此数据包被钩子函数放行，则调用
+											ip_rcv_finish()继续处理。 
+ (0)               |          nf_hook_slow() {		如果指定协议的指定钩子类型上注册了钩子函数数，会调用nf_hook_slow函数
+ (0)               |            nf_iterate() { 		递归调用注册的钩子函数
+ (0)   1.024 us    |              ip_sabotage_in(); 	这个hook点只丢弃skb结构中设置桥参数但没有相关桥标志的包，/* net/bridge/br_netfilter.c */
+ (0)   1.088 us    |              ipv4_conntrack_defrag(); 	用于分片数据包的重组/* net/ipv4/netfilter/ip_conntrack_standalone.c */
+ (0)               |              ipt_hook() { 	raw表，提供对收到的数据包在连接跟踪前进行处理的手段/* net/ipv4/netfilter/iptable_raw.c */
+ (0)   1.968 us    |                ipt_do_table(); 该点用户可加载iptables规则进行控制
+ (0)   4.064 us    |              }
+ (0)               |              ipv4_conntrack_in() {	根据数据包协议找到其连接跟踪中的对应模块，若找到，则对sk_buf中的nfct字段进行标记，若没有，则新创建一个连接跟踪
+														这个hook点完成连接跟踪，为每个skb找到所属连接(ESTABLISHED, REPLY)
+														或新建连接(NEW, RELATED)
+ 														/* net/ipv4/netfilter/ip_conntrack_standalone.c */
+ 														//include/linux/netfiter_ipv4/ip_conntrack_core.h
+ (0)               |                nf_conntrack_in() {
+													 	连接跟踪主要在nf_conntrack_in和nf_conntrack_confirm这两个函数里面实现。
+													 	在nf_conntrack_in里面会调用resolve_normal_ct()在连接跟踪表中查找匹配的跟踪记录，
+													 	如果没有找到则调用init_conntrack创建一个新的记录。
+													 	最后确定sk_buff结构状态域的值，对其中的nfct和nfctinfo进行赋值。
+														nf_conntrack_confirm被挂在NF_INET_POST_ROUTING钩子上，
+														对其数据包进行再次连接跟踪记录确认，并最后调用__nf_conntrack_hash_insert将新建的连接跟踪记录添加到连接跟踪表中。
+														考虑到数据包可能被过滤掉，之前新建立的连接跟踪记录实际上并为真正的加到连接跟踪表中，
+														而是在最后由函数nf_conntrack_confirm确认后真正的添加。
+ (0)   1.024 us    |                  __nf_ct_l4proto_find();
+ (0)   1.120 us    |                  nf_ip_checksum();
+ (0)   1.296 us    |                  nf_ct_get_tuple(); 从sk_buff中获取源ip、端口，目的ip、端口、传输协议和网络协议信息，之后赋值给多元组tuple。
+ (0)               |                  nf_conntrack_find_get() {	判断连接跟踪是否已存在，已记录连接的tuple都会存储在net->ct.hash中。如果已存在，则直接返回；
+ 																如果不存在，则调用init_conntrack()创建新的，最后设置相关的连接信息。
+ (0)   1.200 us    |                    __nf_conntrack_find();
+ (0)   3.584 us    |                  }
+ (0)   1.280 us    |                  __nf_ct_refresh_acct();
+ (0) + 15.264 us   |                }
+ (0) + 17.312 us   |              }
+ (0)               |              ipt_pre_routing_hook() {
+														/* net/ipv4/netfilter/iptable_mangle.c */
+														 这个hook点为mangle表，提供对收到的数据包进行修改的处理
+														 该点用户可加载iptables规则进行控制
+ (0)   1.712 us    |                ipt_do_table();
+ (0)   3.792 us    |              }
+ (0)               |              nf_nat_in() {
+														/* net/ipv4/netfilter/ip_nat_standalone.c */
+														 该hook点对刚收到本机的skb包进行目的NAT操作
+														 用户规则可控,nat表，但规则只对NEW包进行处理，后续包自动处理
+ (0)               |                nf_nat_fn() {
+ (0)               |                  nf_nat_packet() {
+ (0)               |                    nf_ct_invert_tuplepr() {
+ (0)   1.040 us    |                      __nf_ct_l4proto_find();
+ (0)   1.392 us    |                      nf_ct_invert_tuple();
+ (0)   6.048 us    |                    }
+ (0) + 21.904 us   |                  }
+ (0) + 24.112 us   |                }
+ (0) + 26.208 us   |              }
+ (0) + 60.800 us   |            }
+ (0) + 63.008 us   |          }
+ (0)               |          ip_rcv_finish() {
+ (0)               |            ip_forward() {
+ (0)               |              nf_hook_slow() { FORWARD
+ (0)               |                nf_iterate() {
+ (0)               |                  ipt_forward_hook() {
+											 /* net/ipv4/netfilter/iptable_mangle.c */
+											 这个hook点为mangle表，提供对收到的数据包进行修改的处理
+											 该点用户可加载iptables规则进行控制
+ (0)   2.080 us    |                    ipt_do_table();
+ (0)   4.176 us    |                  }
+ (0)               |                  ipt_hook() {
+											/* net/ipv4/netfilter/iptable_filter.c */
+											 这个hook点为filter表，提供对转发的数据包进行过滤的处理
+											 该点用户可加载iptables规则进行控制
+ (0)   1.600 us    |                    ipt_do_table();
+ (0)   3.744 us    |                  }
+ (0) + 11.136 us   |                }
+ (0) + 13.280 us   |              }
+ (0)               |              nf_hook_slow() { POSTROUTING
+ (0)               |                nf_iterate() {
+ (0)               |                  ipt_post_routing_hook() {
+											  /* net/ipv4/netfilter/iptable_mangle.c */
+											 这个hook点为mangle表，提供对收到的数据包进行修改的处理
+											 该点用户可加载iptables规则进行控制
+ (0)   1.680 us    |                    ipt_do_table();	
+ (0)   3.776 us    |                  }
+ (0)               |                  nf_nat_out() {
+											 /* net/ipv4/netfilter/ip_nat_standalone.c */
+											 对本机发出的skb包进行源NAT操作
+											 用户规则可控,nat表，但规则只对NEW包进行处理，后续包自动处理
+ (0)               |                    nf_nat_fn() {
+ (0)               |                      nf_nat_packet() {	
+											 	//net/netfilter/nf_nat_core.c
+												在nf_nat_packet中，会将packet的源地址修改为inverse tuple的源地址：
+ (0)               |                        nf_ct_invert_tuplepr() {使用inverse tuple，并且对于SNAT使用其src address，对于DNAT使用其dst addr
+ (0)   1.040 us    |                          __nf_ct_l4proto_find(); udp
+ (0)   1.280 us    |                          nf_ct_invert_tuple();	实现交换处理的函数
+ (0)   5.520 us    |                        }
+ (0)   7.968 us    |                      }
+ (0) + 10.096 us   |                    }
+ (0) + 13.648 us   |                  }
+ (0)               |                  ipv4_confirm() {
+											 /* net/ipv4/netfilter/ip_conntrack_standalone.c */
+											 该hook点对进入本机的skb包完成最后的确认，只对NEW包处理
+											 确认NEW的新连接信息在当前的连接表中是不存在的
+											 用户不可控	
+ (0)   1.200 us    |                    nf_ct_deliver_cached_events();
+ (0)   3.408 us    |                  }
+ (0) + 25.136 us   |                }
+ (0) + 28.432 us   |              }
+ (0)   1.696 us    |              gfar_start_xmit();
+ (0) + 50.848 us   |            }
+ (0) + 53.472 us   |          }
+ (0) ! 119.856 us  |        }
+ (0) ! 122.368 us  |      }
